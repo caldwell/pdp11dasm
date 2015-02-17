@@ -1,0 +1,21 @@
+
+PDP11DASM version 0.0.3
+
+To compile pdp11dasm, just type 'make'. Then copy the pdp11dasm program to
+'/usr/local/bin' or any directory that is in your PATH environment variable.
+
+This distribution includes a PDP-11 native assembler ('as') and control file
+('as.ctl') as examples.
+
+To run the example, type:
+pdp11dasm as
+then examine the output file 'as.das' with any text editor.
+
+Documentation is in the file pdp11dasm.html.
+
+Please report any bugs (or better yet, bug fixes) to the author at
+theposts AT pacbell DOT net.
+
+Jeff Post
+January, 2004
+

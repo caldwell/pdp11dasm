@@ -1,0 +1,144 @@
+<!doctype html public"-//w3c//dtd xhtml 1.0 Transitional//en">
+<html>
+<head>
+<title>PDP11DASM User Manual</title>
+</head>
+<body>
+<a name="topofdoc"></a>
+<div align="center">
+<font size="7" color="#ff0000">
+<strong><i>PDP11DASM User Manual</i></strong><br>
+</font>
+
+<hr>
+<font size="4" color="#000000">
+Copyright 2004 by Jeffery L. Post
+<br>
+theposts AT pacbell DOT net
+<br>
+Version 0.0.3 - January, 2004
+</font>
+<hr>
+</div>
+<hr>
+
+<h3>TABLE OF CONTENTS</h3>
+<!strong>
+<ul>
+<li><a href="#introduction">Introduction</a><br>
+<li><a href="#usage">Using pdp11dasm</a><br>
+<li><a href="#disclaimer">Disclaimer</a><br>
+</ul>
+<br><br>
+<!/strong>
+
+<a name="introduction"></a><em>Introduction</em><hr>
+Pdp11dasm is a Linux disassembler for PDP-11 binary code. The C source
+code for PDP11DASM is released under the GNU General Public License
+(see the file COPYING). Type 'make' and then copy the compiled pdp11dasm
+to '/usr/local/bin' or whatever directory is part of your path.
+<br><br>
+
+<a name="usage"><em>Using pdp11dasm</em></a><hr>
+Type 'pdp11dasm &lt;filename&gt;' to disassemble a PDP-11 binary file.
+Pdp11dasm will write the output disassembly code to a file of the same
+name but with an extention of '.das' appended.
+<br><br>
+The output of pdp11dasm consists of five fields:
+<ul>
+<li>Address field - Address of each instruction in octal.
+<li>Opcode field - One to three instruction words in octal.
+<li>Mnemonic field - The PDP-11 assembly mnemonic for the instruction.
+<li>Operand field - Symbolic representation of any instruction operands.
+<li>Comment field - Ascii representation of the instruction and operand words.
+</ul>
+Example (columns may not line up in your browser):
+<br><br>
+<pre>
+;
+000604: 005767 041066       	tst	41676			; w.6B
+000610: 001403              	beq	620			; ..
+000612: 020427 000012       	cmp	r4,#12			; .!..
+000616: 001022              	bne	664			; ..
+000620: 010477 017446       	mov	r4,@20272		; ?.&.
+000624: 062767 000002 017440	add	#2,20272		; we.. .
+000632: 026727 017434 041652	cmp	20272,#41652		; W-..*C
+000640: 103411              	bcs	664			; ..
+000642: 012767 040652 017422	mov	#40652,20272		; w.*A..
+000650: 116700 037774       	movb	40650,r0		; @.|?
+000654: 104404              	trap	4			; ..
+000656: 040652              	bic	r6,@-(r2)		; *A
+000660: 001000              	bne	662			; ..
+000662: 103636              	bcs	360			; ..
+000664: 000207              	rts	r7			; ..
+;
+</pre>
+<br>
+Of course, pdp11dasm has no way of knowing whether the binary words it's
+disassembling are really code, or if they're data. When the words are
+actually data, it would be nice if the disassembler would output a more
+meaningful listing, such as:
+<br><br>
+<pre>
+005512: 170360 170360 175056	defw	170360,170360,175056	; pppp.z
+005520: 030460 031462 032464	defb	'012345'		; 012345
+005526: 033466 034470       	defb	'6789'			; 6789
+005532: 177360 170000 172364	defw	177360,170000,172364	; p~.ptt
+</pre>
+<br>
+You can have pdp11dasm do just that by creating a text file with the same
+name as the file to be disassembled, but with an extention of '.ctl'. In
+this control file, you can specify regions as binary words or ascii text
+by entering a 'd' for data, or 'a' for ascii followed by the address (in
+octal). If more than one word should be flagged as the given type, you can
+do it in one of two ways:
+
+<br><br>
+After the address, put a dash followed by the ending address:
+<pre>
+d 5512-5516
+a 5520-5530
+d 5532-5536
+</pre>
+<br><br>
+Or put a plus followed by the size of the region in <em>bytes</em> (in octal):
+<pre>
+d 5512+6
+a 5520+12
+d 5532+6
+</pre>
+<br><br>
+The size number is entered in octal bytes instead of words to simplify
+calculating the size from the start and end addresses. For example: the
+first line in the above example has binary words at 5512, but switches
+to ascii text at 5520. In octal, 5520 - 5512 = 6, so the size of the
+binary region is 6 bytes. The ascii region starts at 5520 and changes
+back to binary words at 5532. 5532 - 5520 = 12 (octal) bytes.
+<br><br>
+Note that three words at most will be on each line of output regardless
+of the length of the region. This is so that the opcode field will show
+at most three words, and to prevent really long strings in the program
+from making excessively long lines in the output file.
+<br><br>
+Each line in the control file must start with either a 'd' or an 'a'.
+Any other character in the first column will cause that line to be
+interpreted as a comment and otherwise ignored.
+<br><br>
+When pdp11dasm is run, it will look for a control file with the same
+name as the file given on the command line. You only need to create
+a control file in the same directory as the file to be disassembled
+for it to be used in the disassembly process.
+<br><br>
+
+<a name="disclaimer"></a><em>Disclaimer</em><hr>
+Pdp11dasm is a tool for educational use and for recovering source code
+that has been lost or is unavailable.
+<em>Disassembling a program may be unethical or illegal under some
+circumstances.</em> It is your sole responsibility to determine if
+use of pdp11dasm is appropriate for your circumstances.
+<br><br>
+
+<a href="#topofdoc">Back to top</a><br>
+<br><br><br><br>
+</body>
+</html>

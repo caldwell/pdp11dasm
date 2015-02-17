@@ -4,11 +4,10 @@
  * Jeffery L. Post
  * theposts@pacbell.net
  *
- * Version 0.0.1 - 01/16/04
+ * Version 0.0.3 - 02/01/04
  *
- * This is a quick-n-dirty hack cranked out in two days just for the fun of
- * it. If you find bugs, please notify the author at the above email address.
- * The decoding of floating point opcodes is probably not correct.
+ * If you find bugs, please notify the author at the above email address.
+ * [TODO] The decoding of floating point opcodes is not correct.
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
@@ -41,13 +40,29 @@
 #define	TRUE	1
 #endif
 
-#define	FN_LEN			128
+#define	VERSION			0
+#define	MAJOR_REV		0
+#define	MINOR_REV		3
+
 #define	byte				unsigned char
 #define	word				unsigned short
-#define	MODEREG_MASK	0x3f
-#define	OFFSET_MASK		0xff
-#define	TAB				0x09
+#define	bool				int
 
+#define	MODEREG_MASK	0x3f	// mode and register mask
+#define	OFFSET_MASK		0xff	// pc relative offset from instruction
+
+#define	FN_LEN			128	// max file name length + 1
+#define	LINE_LEN			128	// max length of output line + 1
+
+// Control file codes
+
+#define	CTL_NONE			0x00	// executable code
+#define	CTL_DATA			0x01	// binary word
+#define	CTL_ASCII		0x02	// ascii data
+
+// Prototypes
+
+void	usage(void);
 int	decode(int adrs);
 int	group0(int adrs);
 int	group1(int adrs);
@@ -66,17 +81,23 @@ int	groupd(int adrs);
 int	groupe(int adrs);
 int	groupf(int adrs);
 int	doOperand(int adrs, int modereg);
+char	*get_adrs(char *text, word *val);
 
-char	src[FN_LEN], dst[FN_LEN];	// file name buffers
-char	ctl[FN_LEN];					// control file name
-char	outLine[128];					// disassembled output line
+char	pdpFileName[FN_LEN];		// input file
+char	ctlFileName[FN_LEN];		// control file name
+char	disFileName[FN_LEN];		// disassembly file name
+
+char	outLine[128];				// disassembled output line
 char	temp[128];
-FILE	*fp = NULL;						// general purpose file struct
-FILE	*disFile = NULL;				// disassembled file
+FILE	*fp = NULL;					// file to be disassembled
+FILE	*ctlfp = NULL;				// control file
+FILE	*disFile = NULL;			// disassembled file
+
 struct stat	fstatus;
-int	pc;								// current program counter
-int	breakLine;
-word	*program;
+int	pc;							// current program counter
+int	breakLine;					// if true, add a blank comment line to output
+word	*program;					// the program data
+byte	*flags;						// disassembly flags from the control file
 
 //////////////////////////////////
 //
@@ -86,46 +107,206 @@ word	*program;
 
 int main(int argc, char *argv[])
 {
-	int	max;
+	int	i, max;
+	word	start, stop;
+	char	*text, func, chr;
 
 	if (argc < 2)
 	{
-		printf("usage: pdp11dasm [file]\n");
+		usage();
 		return 1;
 	}
 
-	stat(argv[1], &fstatus);
+	pdpFileName[0] = '\0';
+
+	for (i=1; i<argc; i++)
+	{
+		chr = *argv[i];
+
+		if (chr == '-')			// option
+		{
+			text = argv[i];
+			text++;
+
+			if (*text == '-')
+				text++;
+
+			chr = toupper(*text);
+
+			if (chr == 'V')		// version
+			{
+				printf("\npdp11dasm version %d.%d.%d\n\n", VERSION, MAJOR_REV, MINOR_REV);
+				return 0;
+			}
+			else if (chr == 'H')	// help
+			{
+				usage();
+				return 0;
+			}
+		}
+		else							// must be the file name
+		{
+			strcpy(pdpFileName, argv[i]);
+		}
+	}
+
+	if (!pdpFileName[0])
+	{
+		usage();
+		return 0;
+	}
+
+	stat(pdpFileName, &fstatus);
 	max = (int) fstatus.st_size;
-	program = (word *) malloc(max);
+	program = (word *) malloc(max + 10);	// larger than actual program to prevent segfaults on lookahead
 
 	if (!program)
 	{
 		printf("Can't allocate memory for program (%d bytes)\n", max);
-		return 1;
+		return -1;
 	}
 
-	fp = fopen(argv[1], "rb");
+	strcpy(disFileName, pdpFileName);
+	strcat(disFileName, ".das");
+	strcpy(ctlFileName, pdpFileName);
+	strcat(ctlFileName, ".ctl");
+	ctlfp = fopen(ctlFileName, "r");
+
+	flags = (byte *) malloc(max + 10);
+
+	if (!flags)
+	{
+		printf("Can't allocate memory for program flags (%d bytes)\n", max);
+		return -1;
+	}
+
+	for (i=0; i < max / 2; i++)
+		flags[i] = CTL_NONE;
+
+	if (ctlfp)		// read control file and set program flags
+	{
+		while (!feof(ctlfp))
+		{
+			start = stop = 0;
+			temp[0] = '\0';
+
+			if (fgets(temp, 127, ctlfp))
+			{
+				text = (char *) &temp[1];
+
+				while (isgraph(*text))				// skip remaining chars in 1st word
+					text++;
+
+				text = get_adrs(text, &start);	// get octal address of start
+
+				while (1)
+				{
+					chr = *text++;
+
+					if (chr != ' ' && chr != '\t')	// skip whitespace
+						break;
+				}
+
+				if (chr == '\n' || chr == ';')	// if only one numeric...
+					--text;								// back up to newline
+
+				func = chr;								// save operator
+				text = get_adrs(text, &stop);		// get octal address of end
+
+				if (func == '+')						// check for valid operator
+					stop += (start - 1);
+				else if (func == '-' && !stop)
+					stop = start;
+
+				if (start < max && stop < max)
+				{
+					switch (toupper(temp[0]))
+					{
+						case 'A':				// ascii text
+							do
+							{
+								flags[start++] = CTL_ASCII;
+							} while (start <= stop);
+							break;
+
+						case 'D':				// data
+							do
+							{
+								flags[start++] = CTL_DATA;
+							} while (start <= stop);
+							break;
+
+						case ';':				// comment
+							break;
+
+						default:					// ignore anything else
+//							fprintf(stderr, "Invalid control code: %s\n", temp);
+							break;
+					}
+				}
+				else
+					printf("Invalid address in %s\n", temp);
+			}
+			else
+				break;
+		}
+
+		fclose(ctlfp);
+	}
+
+	fp = fopen(pdpFileName, "rb");		// open file to be disassembled
 
 	if (!fp)
 	{
-		printf("Can't open file '%s'\n", argv[1]);
-		return 1;
+		printf("Can't open file '%s'\n", pdpFileName);
+		free(program);
+		free(flags);
+
+		return -1;
 	}
 
 	fread(program, sizeof(byte), max, fp);
+	fclose(fp);
+
+	disFile = fopen(disFileName, "w");	// open output file
+
+	if (!disFile)
+	{
+		printf("Can't open output file\n");
+		free(program);
+		free(flags);
+
+		return -1;
+	}
+
 	max /= 2;
 
-	for (pc=0; pc<max; )
+	fprintf(disFile, ";\n; pdp11dasm version %d.%d.%d\n; disassembly of %s\n;",
+		VERSION, MAJOR_REV, MINOR_REV, pdpFileName);
+
+	for (pc=0; pc<max; )			// do the disassembly
 	{
 		pc = decode(pc);
 	}
 
-	printf("\n");
-	fclose(fp);
-	return(0);
+	fprintf(disFile, "\n");
+	fclose(disFile);
+	free(program);
+	free(flags);
+	return 0;
 }								//  End of Main
 
-// Output Ascii for 16 bit word
+void usage(void)
+{
+	printf("\nusage: pdp11dasm [options] file\n\n"
+			"'file' is the PDP-11 binary file to disassemble.\n"
+			"Output will be written to 'file.das'.\n"
+			"Options:\n"
+			"  -v --version   Show version and exit.\n"
+			"  -h --help      Display this message and exit.\n\n");
+}
+
+// Output Ascii codes in comment field for 16 bit word
 
 void printAscii(word data)
 {
@@ -136,14 +317,112 @@ void printAscii(word data)
 	if (chr < ' ' || chr > '~')
 		chr = '.';
 
-	printf("%c", chr);
+	fprintf(disFile, "%c", chr);
 
 	chr = (data >> 8) & 0x7f;
 
 	if (chr < ' ' || chr > '~')
 		chr = '.';
 
-	printf("%c", chr);
+	fprintf(disFile, "%c", chr);
+}
+
+// Output a string of up to three words (6 bytes) (DEFB)
+
+int doString(int adrs)
+{
+	int	i, count = 1;
+	bool	prt, even;
+	char	chr;
+	char	tmp[16];
+
+	if (flags[(adrs + 1) * 2] == CTL_ASCII)
+	{
+		count++;
+
+		if (flags[(adrs + 2) * 2] == CTL_ASCII)
+			count++;
+	}
+
+	sprintf(outLine, "\tdefb\t");
+	prt = FALSE;
+
+	for (i=0; i<count; i++)
+	{
+		for (even=0; even<2; even++)
+		{
+			if (!even)
+				chr = program[adrs] & 0x7f;
+			else
+				chr = (program[adrs] >> 8) & 0x7f;
+
+			if (isprint(chr))					// is printable
+			{
+				if (!i && !even)				// if first character
+					strcat(outLine, "'");	// start with '
+				else if (!prt)
+					strcat(outLine, ",'");
+
+				prt = TRUE;
+				sprintf(tmp, "%c", chr);
+			}
+			else								// not printable, do octal
+			{
+				if (prt)						// end previous ascii string, if any
+					strcat(outLine, "',");
+				else if (i || even)
+					strcat(outLine, ",");
+
+				prt = FALSE;
+				sprintf(tmp, "%o", chr);
+			}
+
+			strcat(outLine, tmp);
+		}
+
+		adrs++;
+	}
+
+	if (prt)
+		strcat(outLine, "'");
+
+	if (flags[adrs * 2] == CTL_NONE)
+		breakLine = TRUE;
+
+	return adrs;
+}
+
+// Output up to 3 words of data (DEFW)
+
+int doData(int adrs)
+{
+	int	i, count = 1;
+	char	tmp[16];
+
+	if (flags[(adrs + 1) * 2] == CTL_DATA)
+	{
+		count++;
+
+		if (flags[(adrs + 2) * 2] == CTL_DATA)
+			count++;
+	}
+
+	sprintf(outLine, "\tdefw\t");
+
+	for (i=0; i<count; i++)
+	{
+		if (i)
+			strcat(outLine, ",");
+
+		sprintf(tmp, "%o", program[adrs]);
+		strcat(outLine, tmp);
+		adrs++;
+	}
+
+	if (flags[adrs * 2] == CTL_NONE)
+		breakLine = TRUE;
+
+	return adrs;
 }
 
 // Decode the current opcode
@@ -157,99 +436,117 @@ int decode(int adrs)
 	code = program[adrs];
 	opcode = code & 0xf000;
 	opcode >>= 12;
-	printf("\n%06o: %06o", adrs * 2, code);
+	fprintf(disFile, "\n%06o: %06o", adrs * 2, code);
 	outLine[0] = '\0';
 
-	switch (opcode)
+	switch (flags[adrs * 2])
 	{
-		case 0x00:
-			adrs = group0(adrs);
+		case CTL_NONE:
+			switch (opcode)
+			{
+				case 0x00:
+					adrs = group0(adrs);
+					break;
+
+				case 0x01:
+					adrs = group1(adrs);
+					break;
+
+				case 0x02:
+					adrs = group2(adrs);
+					break;
+
+				case 0x03:
+					adrs = group3(adrs);
+					break;
+
+				case 0x04:
+					adrs = group4(adrs);
+					break;
+
+				case 0x05:
+					adrs = group5(adrs);
+					break;
+
+				case 0x06:
+					adrs = group6(adrs);
+					break;
+
+				case 0x07:
+					adrs = group7(adrs);
+					break;
+
+				case 0x08:
+					adrs = group8(adrs);
+					break;
+
+				case 0x09:
+					adrs = group9(adrs);
+					break;
+
+				case 0x0a:
+					adrs = groupa(adrs);
+					break;
+
+				case 0x0b:
+					adrs = groupb(adrs);
+					break;
+
+				case 0x0c:
+					adrs = groupc(adrs);
+					break;
+
+				case 0x0d:
+					adrs = groupd(adrs);
+					break;
+
+				case 0x0e:
+					adrs = groupe(adrs);
+					break;
+
+				case 0x0f:
+					adrs = groupf(adrs);
+					break;
+			}
 			break;
 
-		case 0x01:
-			adrs = group1(adrs);
+		case CTL_DATA:
+			adrs = doData(adrs);
 			break;
 
-		case 0x02:
-			adrs = group2(adrs);
+		case CTL_ASCII:
+			adrs = doString(adrs);
 			break;
 
-		case 0x03:
-			adrs = group3(adrs);
-			break;
-
-		case 0x04:
-			adrs = group4(adrs);
-			break;
-
-		case 0x05:
-			adrs = group5(adrs);
-			break;
-
-		case 0x06:
-			adrs = group6(adrs);
-			break;
-
-		case 0x07:
-			adrs = group7(adrs);
-			break;
-
-		case 0x08:
-			adrs = group8(adrs);
-			break;
-
-		case 0x09:
-			adrs = group9(adrs);
-			break;
-
-		case 0x0a:
-			adrs = groupa(adrs);
-			break;
-
-		case 0x0b:
-			adrs = groupb(adrs);
-			break;
-
-		case 0x0c:
-			adrs = groupc(adrs);
-			break;
-
-		case 0x0d:
-			adrs = groupd(adrs);
-			break;
-
-		case 0x0e:
-			adrs = groupe(adrs);
-			break;
-
-		case 0x0f:
-			adrs = groupf(adrs);
+		default:
+			printf("\nUnknown code 0x%02x at address %06o\n", flags[adrs], adrs);
+			adrs++;
 			break;
 	}
 
 	switch (adrs - start)
 	{
 		case 1:
-			printf("              ");
+			fprintf(disFile, "              ");
 			break;
 
 		case 2:
-			printf(" %06o       ", program[start + 1]);
+			fprintf(disFile, " %06o       ", program[start + 1]);
 			break;
 
 		case 3:
-			printf(" %06o %06o", program[start + 1], program[start + 2]);
+			fprintf(disFile, " %06o %06o", program[start + 1], program[start + 2]);
 			break;
 	}
 
-	printf("%s", outLine);		// pos = # characters printed starting at col 32
+	fprintf(disFile, "%s", outLine);		// pos = # characters printed starting at col 32
 
 	i = 1;
 	pos = 32;
 
 	while (outLine[i])
 	{
-		if (outLine[i] != TAB)
+		if (outLine[i] != '\t')
 			pos++;
 		else do
 			pos++;
@@ -260,18 +557,18 @@ int decode(int adrs)
 
 	while (pos < 64)
 	{
-		printf("\t");
+		fprintf(disFile, "\t");
 		pos += 8;
 		pos &= 0xf8;
 	}
 
-	printf("; ");
+	fprintf(disFile, "; ");
 
 	for (i=start; i<adrs; i++)
 		printAscii(program[i]);
 
 	if (breakLine)
-		printf("\n;");
+		fprintf(disFile, "\n;");
 
 	return adrs;
 }
@@ -290,7 +587,7 @@ int jsr(int adrs)
 	int	reg;
 
 	reg = (program[adrs] >> 6) & 7;
-	sprintf(outLine, "\tJSR\tR%d,", reg);
+	sprintf(outLine, "\tjsr\tr%d,", reg);
 	adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 	return adrs;
 }
@@ -325,38 +622,40 @@ int misc0(int adrs)
 			switch (program[adrs])
 			{
 				case 0:
-					sprintf(outLine, "\tHALT");
-					breakLine = TRUE;
+					sprintf(outLine, "\thalt");
+
+					if (program[adrs + 1])		// if not followed by another halt,
+						breakLine = TRUE;			// do a blank line
 					break;
 
 				case 1:
-					sprintf(outLine, "\tWAIT");
+					sprintf(outLine, "\twait");
 					break;
 
 				case 2:
-					sprintf(outLine, "\tRTI");
+					sprintf(outLine, "\trti");
 					breakLine = TRUE;
 					break;
 
 				case 3:
-					sprintf(outLine, "\tBPT");
+					sprintf(outLine, "\tbpt");
 					break;
 
 				case 4:
-					sprintf(outLine, "\tIOT");
+					sprintf(outLine, "\tiot");
 					break;
 
 				case 5:
-					sprintf(outLine, "\tRESET");
+					sprintf(outLine, "\treset");
 					break;
 
 				case 6:
-					sprintf(outLine, "\tRTT");
+					sprintf(outLine, "\trtt");
 					breakLine = TRUE;
 					break;
 
 				case 7:
-					sprintf(outLine, "\tMFPT");
+					sprintf(outLine, "\tmfpt");
 					break;
 
 				default:
@@ -366,7 +665,7 @@ int misc0(int adrs)
 			break;
 
 		case 1:		// jmp
-			sprintf(outLine, "\tJMP\t");
+			sprintf(outLine, "\tjmp\t");
 			adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 			breakLine = TRUE;
 			break;
@@ -374,57 +673,57 @@ int misc0(int adrs)
 		case 2:		// rts, spl, nop, cond codes & unimplemented
 			if (program[adrs] < 000210)
 			{
-				sprintf(outLine, "\tRTS\tR%d", program[adrs] & 7);
+				sprintf(outLine, "\trts\tr%d", program[adrs] & 7);
 				breakLine = TRUE;
 			}
 			else if (program[adrs] < 000230)
 				invalid();
 			else if (program[adrs] < 000240)		// spl
-				sprintf(outLine, "\tSPL\t%d", program[adrs] & 7);
+				sprintf(outLine, "\tspl\t%d", program[adrs] & 7);
 			else
 			{
 				if (program[adrs] == 0240)
-					sprintf(outLine, "\tNOP");
+					sprintf(outLine, "\tnop");
 				else switch (program[adrs])		// condition codes
 				{
 					case 0241:
-						sprintf(outLine, "\tCLC");
+						sprintf(outLine, "\tclc");
 						break;
 
 					case 0242:
-						sprintf(outLine, "\tCLV");
+						sprintf(outLine, "\tclv");
 						break;
 
 					case 0244:
-						sprintf(outLine, "\tCLZ");
+						sprintf(outLine, "\tclz");
 						break;
 
 					case 0250:
-						sprintf(outLine, "\tCLN");
+						sprintf(outLine, "\tcln");
 						break;
 
 					case 0257:
-						sprintf(outLine, "\tCCC");
+						sprintf(outLine, "\tccc");
 						break;
 
 					case 0261:
-						sprintf(outLine, "\tSEC");
+						sprintf(outLine, "\tsec");
 						break;
 
 					case 0262:
-						sprintf(outLine, "\tSEV");
+						sprintf(outLine, "\tsev");
 						break;
 
 					case 0264:
-						sprintf(outLine, "\tSEZ");
+						sprintf(outLine, "\tsez");
 						break;
 
 					case 0270:
-						sprintf(outLine, "\tSEN");
+						sprintf(outLine, "\tsen");
 						break;
 
 					case 0277:
-						sprintf(outLine, "\tSCC");
+						sprintf(outLine, "\tscc");
 						break;
 
 					default:
@@ -435,7 +734,7 @@ int misc0(int adrs)
 			break;
 
 		case 3:		// swab
-			sprintf(outLine, "\tSWAB\t");
+			sprintf(outLine, "\tswab\t");
 			adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 			break;
 
@@ -443,7 +742,7 @@ int misc0(int adrs)
 		case 5:
 		case 6:
 		case 7:
-			sprintf(outLine, "\tBR\t");
+			sprintf(outLine, "\tbr\t");
 			doOffset(adrs, program[adrs] & OFFSET_MASK);
 			breakLine = TRUE;
 			break;
@@ -470,25 +769,25 @@ int group0(int adrs)
 
 		case 1:		// bne, beq
 			if (program[adrs] & 0x100)
-				sprintf(outLine, "\tBEQ\t");
+				sprintf(outLine, "\tbeq\t");
 			else
-				sprintf(outLine, "\tBNE\t");
+				sprintf(outLine, "\tbne\t");
 			doOffset(adrs, program[adrs] & OFFSET_MASK);
 			break;
 
 		case 2:		// bge, blt
 			if (program[adrs] & 0x100)
-				sprintf(outLine, "\tBLT\t");
+				sprintf(outLine, "\tblt\t");
 			else
-				sprintf(outLine, "\tBGE\t");
+				sprintf(outLine, "\tbge\t");
 			doOffset(adrs, program[adrs] & OFFSET_MASK);
 			break;
 
 		case 3:		// bgt, ble
 			if (program[adrs] & 0x100)
-				sprintf(outLine, "\tBLE\t");
+				sprintf(outLine, "\tble\t");
 			else
-				sprintf(outLine, "\tBGT\t");
+				sprintf(outLine, "\tbgt\t");
 			doOffset(adrs, program[adrs] & OFFSET_MASK);
 			break;
 
@@ -502,35 +801,35 @@ int group0(int adrs)
 			switch (code)
 			{
 				case 0:
-					sprintf(outLine, "\tCLR\t");
+					sprintf(outLine, "\tclr\t");
 					break;
 
 				case 1:
-					sprintf(outLine, "\tCOM\t");
+					sprintf(outLine, "\tcom\t");
 					break;
 
 				case 2:
-					sprintf(outLine, "\tINC\t");
+					sprintf(outLine, "\tinc\t");
 					break;
 
 				case 3:
-					sprintf(outLine, "\tDEC\t");
+					sprintf(outLine, "\tdec\t");
 					break;
 
 				case 4:
-					sprintf(outLine, "\tNEG\t");
+					sprintf(outLine, "\tneg\t");
 					break;
 
 				case 5:
-					sprintf(outLine, "\tADC\t");
+					sprintf(outLine, "\tadc\t");
 					break;
 
 				case 6:
-					sprintf(outLine, "\tSBC\t");
+					sprintf(outLine, "\tsbc\t");
 					break;
 
 				case 7:
-					sprintf(outLine, "\tTST\t");
+					sprintf(outLine, "\ttst\t");
 					break;
 			}
 
@@ -543,36 +842,36 @@ int group0(int adrs)
 			switch (code)
 			{
 				case 0:
-					sprintf(outLine, "\tROR\t");
+					sprintf(outLine, "\tror\t");
 					break;
 
 				case 1:
-					sprintf(outLine, "\tROL\t");
+					sprintf(outLine, "\trol\t");
 					break;
 
 				case 2:
-					sprintf(outLine, "\tASR\t");
+					sprintf(outLine, "\tasr\t");
 					break;
 
 				case 3:
-					sprintf(outLine, "\tASL\t");
+					sprintf(outLine, "\tasl\t");
 					break;
 
 				case 4:
-					sprintf(outLine, "\tMARK\t%o", program[adrs] & 0x3f);
+					sprintf(outLine, "\tmark\t%o", program[adrs] & 0x3f);
 					skipOperand = TRUE;
 					break;
 
 				case 5:
-					sprintf(outLine, "\tMFPI\t");
+					sprintf(outLine, "\tmfpi\t");
 					break;
 
 				case 6:
-					sprintf(outLine, "\tMTPI\t");
+					sprintf(outLine, "\tmtpi\t");
 					break;
 
 				case 7:
-					sprintf(outLine, "\tSXT\t");
+					sprintf(outLine, "\tsxt\t");
 					break;
 			}
 
@@ -594,7 +893,7 @@ int group1(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tMOV\t");
+	sprintf(outLine, "\tmov\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -608,7 +907,7 @@ int group2(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tCMP\t");
+	sprintf(outLine, "\tcmp\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -622,7 +921,7 @@ int group3(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tBIT\t");
+	sprintf(outLine, "\tbit\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -636,7 +935,7 @@ int group4(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tBIC\t");
+	sprintf(outLine, "\tbic\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -650,7 +949,7 @@ int group5(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tBIS\t");
+	sprintf(outLine, "\tbis\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -664,7 +963,7 @@ int group6(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tADD\t");
+	sprintf(outLine, "\tadd\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -684,37 +983,37 @@ int group7(int adrs)
 	switch (code)
 	{
 		case 0:		// mul
-			sprintf(outLine, "\tMUL\t");
+			sprintf(outLine, "\tmul\t");
 			adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
-			sprintf(temp, ",R%d", reg);
+			sprintf(temp, ",r%d", reg);
 			strcat(outLine, temp);
 			break;
 
 		case 1:		// div
-			sprintf(outLine, "\tDIV\t");
+			sprintf(outLine, "\tdiv\t");
 			adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
-			sprintf(temp, ",R%d", reg);
+			sprintf(temp, ",r%d", reg);
 			strcat(outLine, temp);
 			break;
 
 		case 2:		// ash
-			sprintf(outLine, "\tASH\t");
+			sprintf(outLine, "\tash\t");
 			adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
-			sprintf(temp, ",R%d", reg);
+			sprintf(temp, ",r%d", reg);
 			strcat(outLine, temp);
 			break;
 
 		case 3:		// ashc
-			sprintf(outLine, "\tASHC\t");
+			sprintf(outLine, "\tashc\t");
 			adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
-			sprintf(temp, ",R%d", reg);
+			sprintf(temp, ",r%d", reg);
 			strcat(outLine, temp);
 			break;
 
 		case 4:		// xor
-			sprintf(outLine, "\tXOR\t");
+			sprintf(outLine, "\txor\t");
 			adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
-			sprintf(temp, ",R%d", reg);
+			sprintf(temp, ",r%d", reg);
 			strcat(outLine, temp);
 			break;
 
@@ -728,19 +1027,19 @@ int group7(int adrs)
 				switch (code)
 				{
 					case 0:
-						sprintf(outLine, "\tFADD\tR%d", program[adrs] & 7);
+						sprintf(outLine, "\tfadd\tr%d", program[adrs] & 7);
 						break;
 
 					case 1:
-						sprintf(outLine, "\tFSUB\tR%d", program[adrs] & 7);
+						sprintf(outLine, "\tfsub\tr%d", program[adrs] & 7);
 						break;
 
 					case 2:
-						sprintf(outLine, "\tFMUL\tR%d", program[adrs] & 7);
+						sprintf(outLine, "\tfmul\tr%d", program[adrs] & 7);
 						break;
 
 					case 3:
-						sprintf(outLine, "\tFMUL\tR%d", program[adrs] & 7);
+						sprintf(outLine, "\tfdiv\tr%d", program[adrs] & 7);
 						break;
 				}
 			}
@@ -752,7 +1051,7 @@ int group7(int adrs)
 
 		case 7:		// sob
 			offset = 2 * (adrs + 1) - 2 * (program[adrs] & 0x3f);
-			sprintf(outLine, "\tSOB\tR%d,%o", reg, offset);
+			sprintf(outLine, "\tsob\tr%d,%o", reg, offset);
 			break;
 	}
 
@@ -773,41 +1072,41 @@ int group8(int adrs)
 	{
 		case 0:		// bpl, bmi
 			if (program[adrs] & 0x100)
-				sprintf(outLine, "\tBMI\t");
+				sprintf(outLine, "\tbmi\t");
 			else
-				sprintf(outLine, "\tBPL\t");
+				sprintf(outLine, "\tbpl\t");
 			doOffset(adrs, program[adrs] & OFFSET_MASK);
 			break;
 
 		case 1:		// bhi, blos
 			if (program[adrs] & 0x100)
-				sprintf(outLine, "\tBLOS\t");
+				sprintf(outLine, "\tblos\t");
 			else
-				sprintf(outLine, "\tBHI\t");
+				sprintf(outLine, "\tbhi\t");
 			doOffset(adrs, program[adrs] & OFFSET_MASK);
 			break;
 
 		case 2:		// bvc, bvs
 			if (program[adrs] & 0x100)
-				sprintf(outLine, "\tBVS\t");
+				sprintf(outLine, "\tbvs\t");
 			else
-				sprintf(outLine, "\tBVC\t");
+				sprintf(outLine, "\tbvc\t");
 			doOffset(adrs, program[adrs] & OFFSET_MASK);
 			break;
 
 		case 3:		// bcc, bhis, bcs, blo
 			if (program[adrs] & 0x100)
-				sprintf(outLine, "\tBCS\t");
+				sprintf(outLine, "\tbcs\t");
 			else
-				sprintf(outLine, "\tBCC\t");
+				sprintf(outLine, "\tbcc\t");
 			doOffset(adrs, program[adrs] & OFFSET_MASK);
 			break;
 
 		case 4:		// emt, trap
 			if (program[adrs] < 0104400)
-				sprintf(outLine, "\tEMT");
+				sprintf(outLine, "\temt");
 			else
-				sprintf(outLine, "\tTRAP");
+				sprintf(outLine, "\ttrap");
 
 			sprintf(temp, "\t%o", program[adrs] & 0xff);
 			strcat(outLine, temp);
@@ -819,35 +1118,35 @@ int group8(int adrs)
 			switch (code)
 			{
 				case 0:
-					sprintf(outLine, "\tCLRB\t");
+					sprintf(outLine, "\tclrb\t");
 					break;
 
 				case 1:
-					sprintf(outLine, "\tCOMB\t");
+					sprintf(outLine, "\tcomb\t");
 					break;
 
 				case 2:
-					sprintf(outLine, "\tINCB\t");
+					sprintf(outLine, "\tincb\t");
 					break;
 
 				case 3:
-					sprintf(outLine, "\tDECB\t");
+					sprintf(outLine, "\tdecb\t");
 					break;
 
 				case 4:
-					sprintf(outLine, "\tNEGB\t");
+					sprintf(outLine, "\tnegb\t");
 					break;
 
 				case 5:
-					sprintf(outLine, "\tADCB\t");
+					sprintf(outLine, "\tadcb\t");
 					break;
 
 				case 6:
-					sprintf(outLine, "\tSBCB\t");
+					sprintf(outLine, "\tsbcb\t");
 					break;
 
 				case 7:
-					sprintf(outLine, "\tTSTB\t");
+					sprintf(outLine, "\ttstb\t");
 					break;
 			}
 
@@ -860,19 +1159,19 @@ int group8(int adrs)
 			switch (code)
 			{
 				case 0:
-					sprintf(outLine, "\tRORB\t");
+					sprintf(outLine, "\trorb\t");
 					break;
 
 				case 1:
-					sprintf(outLine, "\tROLB\t");
+					sprintf(outLine, "\trolb\t");
 					break;
 
 				case 2:
-					sprintf(outLine, "\tASRB\t");
+					sprintf(outLine, "\tasrb\t");
 					break;
 
 				case 3:
-					sprintf(outLine, "\tASLB\t");
+					sprintf(outLine, "\taslb\t");
 					break;
 
 				case 4:
@@ -881,11 +1180,11 @@ int group8(int adrs)
 					break;
 
 				case 5:
-					sprintf(outLine, "\tMFPD\t");
+					sprintf(outLine, "\tmfpd\t");
 					break;
 
 				case 6:
-					sprintf(outLine, "\tMTPD\t");
+					sprintf(outLine, "\tmtpd\t");
 					break;
 
 				case 7:
@@ -912,7 +1211,7 @@ int group9(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tMOVB\t");
+	sprintf(outLine, "\tmovb\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -926,7 +1225,7 @@ int groupa(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tCMPB\t");
+	sprintf(outLine, "\tcmpb\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -940,7 +1239,7 @@ int groupb(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tBITB\t");
+	sprintf(outLine, "\tbitb\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -954,7 +1253,7 @@ int groupc(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tBICB\t");
+	sprintf(outLine, "\tbicb\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -968,7 +1267,7 @@ int groupd(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tBISB\t");
+	sprintf(outLine, "\tbisb\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -982,7 +1281,7 @@ int groupe(int adrs)
 {
 	int	modereg;
 
-	sprintf(outLine, "\tSUB\t");
+	sprintf(outLine, "\tsub\t");
 	modereg = program[adrs];
 	adrs = doOperand(adrs, (modereg >> 6) & MODEREG_MASK);
 	strcat(outLine, ",");
@@ -991,6 +1290,9 @@ int groupe(int adrs)
 }
 
 // Output floating point instruction operands
+//
+// [TODO] Get accurate documentation on floating point instructions
+// and fix this function.
 
 int doFPOperand(int adrs)
 {
@@ -1002,16 +1304,16 @@ int doFPOperand(int adrs)
 
 	if (!mode)
 	{
-		sprintf(temp, "\tF%d,", acc);		// mode != 0, restricted to AC0-AC3
+		sprintf(temp, "\tf%d,", acc);		// mode != 0, restricted to AC0-AC3
+		strcat(outLine, temp);
 		adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 	}
-	else		// actually, this makes no sense at all; there are only 3 bits for AC,
+	else		// actually, this makes no sense at all; there are only 2 bits for AC,
 	{			// so it's not possible to access AC4-AC5
-		sprintf(temp, "\tF%d,", acc);
+		sprintf(temp, "\tf%d,", acc);
+		strcat(outLine, temp);
 		adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 	}
-
-	strcat(outLine, temp);
 
 	return adrs;
 }
@@ -1030,23 +1332,23 @@ int groupf(int adrs)
 			switch (program[adrs])
 			{
 				case 0170000:
-					sprintf(outLine, "\tCFCC");
+					sprintf(outLine, "\tcfcc");
 					break;
 
 				case 0170001:
-					sprintf(outLine, "\tSETF");
+					sprintf(outLine, "\tsetf");
 					break;
 
 				case 0170002:
-					sprintf(outLine, "\tSETI");
+					sprintf(outLine, "\tseti");
 					break;
 
 				case 0170011:
-					sprintf(outLine, "\tSETD");
+					sprintf(outLine, "\tsetd");
 					break;
 
 				case 0170012:
-					sprintf(outLine, "\tSETL");
+					sprintf(outLine, "\tsetl");
 					break;
 
 				default:
@@ -1059,17 +1361,17 @@ int groupf(int adrs)
 							break;
 
 						case 1:
-							sprintf(outLine, "\tLDFPS\t");
+							sprintf(outLine, "\tldfps\t");
 							adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 							break;
 
 						case 2:
-							sprintf(outLine, "\tSTFPS\t");
+							sprintf(outLine, "\tstfps\t");
 							adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 							break;
 
 						case 3:
-							sprintf(outLine, "\tSTST\t");
+							sprintf(outLine, "\tstst\t");
 							adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 							break;
 					}
@@ -1083,69 +1385,69 @@ int groupf(int adrs)
 			switch (code)
 			{
 				case 0:
-					sprintf(outLine, "\tCLRF\t");
+					sprintf(outLine, "\tclrf\t");
 					adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 					break;
 
 				case 1:
-					sprintf(outLine, "\tTSTF\t");
+					sprintf(outLine, "\ttstf\t");
 					adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 					break;
 
 				case 2:
-					sprintf(outLine, "\tABSF\t");
+					sprintf(outLine, "\tabsf\t");
 					adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 					break;
 
 				case 3:
-					sprintf(outLine, "\tNEGF\t");
+					sprintf(outLine, "\tnegf\t");
 					adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 					break;
 			}
 			break;
 
 		case 0x02:	// mulf, muld
-			sprintf(outLine, "\tMULF");
+			sprintf(outLine, "\tmult");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x03:	// modf, modd
-			sprintf(outLine, "\tMODF");
+			sprintf(outLine, "\tmodf");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x04:	// addf, addd
-			sprintf(outLine, "\tADDF");
+			sprintf(outLine, "\taddf");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x05:	// ldf, ldd
-			sprintf(outLine, "\tLDF");
+			sprintf(outLine, "\tldf");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x06:	// subf, subd
-			sprintf(outLine, "\tSUBF");
+			sprintf(outLine, "\tsubf");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x07:	// cmpf, cmpd
-			sprintf(outLine, "\tCMPF");
+			sprintf(outLine, "\tcmpf");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x08:	// stf, std
-			sprintf(outLine, "\tSTF");
+			sprintf(outLine, "\tstf");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x09:	// divf, divd
-			sprintf(outLine, "\tDIVF");
+			sprintf(outLine, "\tdivf");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x0a:	// stexp
-			sprintf(outLine, "\tSTEXP");
+			sprintf(outLine, "\tstexp");
 			adrs = doFPOperand(adrs);
 			break;
 
@@ -1153,28 +1455,30 @@ int groupf(int adrs)
 			break;
 
 		case 0x0c:	// stcfd, stcdf
-			sprintf(outLine, "\tSTCDF");
+			sprintf(outLine, "\tstcdf");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x0d:	// ldexp
-			sprintf(outLine, "\tLDEXP");
+			sprintf(outLine, "\tldexp");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x0e:	// ldcif, ldcid, ldclf, ldcld
-			sprintf(outLine, "\tLDCIF");
+			sprintf(outLine, "\tldcif");
 			adrs = doFPOperand(adrs);
 			break;
 
 		case 0x0f:	// ldcdf, ldcfd
-			sprintf(outLine, "\tLDCDF");
+			sprintf(outLine, "\tldcdf");
 			adrs = doFPOperand(adrs);
 			break;
 	}
 
 	return adrs + 1;
 }
+
+// Output operand
 
 int doOperand(int adrs, int modereg)
 {
@@ -1186,11 +1490,11 @@ int doOperand(int adrs, int modereg)
 	switch (mode)
 	{
 		case 0:			// direct
-			sprintf(temp, "R%d", reg);
+			sprintf(temp, "r%d", reg);
 			break;
 
 		case 1:			// register deferred
-			sprintf(temp, "(R%d)", reg);
+			sprintf(temp, "(r%d)", reg);
 			break;
 
 		case 2:			// auto-increment or immediate (r7)
@@ -1200,7 +1504,7 @@ int doOperand(int adrs, int modereg)
 				sprintf(temp, "#%o", program[adrs]);
 			}
 			else
-				sprintf(temp, "(R%d)+", reg);
+				sprintf(temp, "(r%d)+", reg);
 			break;
 
 		case 3:			// auto-increment deferred or absolute (r7)
@@ -1210,15 +1514,15 @@ int doOperand(int adrs, int modereg)
 				sprintf(temp, "@#%o", program[adrs]);
 			}
 			else
-				sprintf(temp, "@(R%d)+", reg);
+				sprintf(temp, "@(r%d)+", reg);
 			break;
 
 		case 4:			// auto-decrement
-			sprintf(temp, "-(R%d)", reg);
+			sprintf(temp, "-(r%d)", reg);
 			break;
 
 		case 5:			// auto-decrement deferred
-			sprintf(temp, "@-(R%d)", reg);
+			sprintf(temp, "@-(r%d)", reg);
 			break;
 
 		case 6:			// index or relative (r7)
@@ -1234,7 +1538,7 @@ int doOperand(int adrs, int modereg)
 				sprintf(temp, "%o", dest);
 			}
 			else
-				sprintf(temp, "%o(R%d)", program[adrs], reg);
+				sprintf(temp, "%o(r%d)", program[adrs], reg);
 			break;
 
 		case 7:			// index deferred or relative deferred (r7)
@@ -1250,12 +1554,62 @@ int doOperand(int adrs, int modereg)
 				sprintf(temp, "@%o", dest);
 			}
 			else
-				sprintf(temp, "@%o(R%d)", program[adrs], reg);
+				sprintf(temp, "@%o(r%d)", program[adrs], reg);
 			break;
 	}
 
 	strcat(outLine, temp);
 	return adrs;
+}
+
+bool isoctal(char c)
+{
+	if (c >= '0' && c <= '7')
+		return TRUE;
+
+	return FALSE;
+}
+
+//	Get octal number from line in control file.
+//	Return updated character pointer.
+
+char *get_adrs(char *text, word *val)
+{
+	word	result, start;
+	char	c;
+
+	result = start = 0;
+	c = toupper(*text);
+
+	while (c)
+	{
+		if (c == ';')			// beginning of comment, ignore all else
+			break;
+
+		if (c == '\n')			// necessary because isspace() includes \n
+			break;
+
+		if (isspace(c))		// skip leading whitespace
+		{
+			text++;
+			if (start)			// if result already begun...
+				break;
+		}
+		else if (!isoctal(c))	// done if not octal character
+			break;
+		else
+		{
+			start = 1;			// flag beginning of result conversion
+			result <<= 3;
+			result |= ((word) c & 7);
+			text++;
+		}
+
+		c = toupper(*text);
+	}
+
+	*val = result;				// pass number back to caller
+	return(text);				// and return updated text pointer
 }
 
 // end of pdp11dasm.c
