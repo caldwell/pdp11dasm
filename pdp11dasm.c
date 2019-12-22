@@ -1174,8 +1174,7 @@ int group8(int adrs)
 					break;
 
 				case 4:
-					invalid();
-					skipOperand = TRUE;
+					sprintf(outLine, "\tmtps\t");
 					break;
 
 				case 5:
@@ -1187,8 +1186,7 @@ int group8(int adrs)
 					break;
 
 				case 7:
-					invalid();
-					skipOperand = TRUE;
+					sprintf(outLine, "\tmfps\t");
 					break;
 			}
 
