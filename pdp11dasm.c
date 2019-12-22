@@ -617,6 +617,7 @@ void doOffset(int adrs, int offset)
 int misc0(int adrs)
 {
 	int	code;
+	int	reg;
 
 	code = (program[adrs] >> 6) & 7;
 
