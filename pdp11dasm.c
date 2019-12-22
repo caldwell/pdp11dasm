@@ -586,7 +586,12 @@ int jsr(int adrs)
 	int	reg;
 
 	reg = (program[adrs] >> 6) & 7;
-	sprintf(outLine, "\tjsr\tr%d,", reg);
+	if (reg != 7) {
+		sprintf(outLine, "\tjsr\tr%d,", reg);
+	}
+	else {
+		sprintf(outLine, "\tcall\t");
+	}
 	adrs = doOperand(adrs, program[adrs] & MODEREG_MASK);
 	return adrs;
 }
@@ -672,7 +677,13 @@ int misc0(int adrs)
 		case 2:		// rts, spl, nop, cond codes & unimplemented
 			if (program[adrs] < 000210)
 			{
-				sprintf(outLine, "\trts\tr%d", program[adrs] & 7);
+				reg = program[adrs] & 7;
+				if (reg != 7) {
+					sprintf(outLine, "\trts\tr%d", reg);
+				}
+				else {
+					sprintf(outLine, "\tret\t");
+				}
 				breakLine = TRUE;
 			}
 			else if (program[adrs] < 000230)
